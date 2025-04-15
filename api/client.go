@@ -131,7 +131,13 @@ func (c *Client) do(ctx context.Context, method, path string, reqData, respData 
 
 const maxBufferSize = 512 * format.KiloByte
 
+// streamWithOption
 func (c *Client) stream(ctx context.Context, method, path string, data any, fn func([]byte) error) error {
+	return c.streamWithOption(ctx, method, path, data, nil, fn)
+
+}
+
+func (c *Client) streamWithOption(ctx context.Context, method, path string, data any, opt *ChatOpt, fn func([]byte) error) error {
 	var buf io.Reader
 	if data != nil {
 		bts, err := json.Marshal(data)
@@ -143,6 +149,14 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 	}
 
 	requestURL := c.base.JoinPath(path)
+	// override the host if opt.HOST is not empty
+	if opt != nil && opt.HOST != "" {
+		baseURL, err := url.Parse(opt.HOST)
+		if err == nil {
+			requestURL = baseURL.JoinPath(path)
+		}
+	}
+
 	request, err := http.NewRequestWithContext(ctx, method, requestURL.String(), buf)
 	if err != nil {
 		return err
@@ -150,6 +164,10 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/x-ndjson")
+	// if opt.Token is not empty, set it to the Authorization header
+	if opt != nil && opt.Token != "" {
+		request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", opt.Token))
+	}
 	request.Header.Set("User-Agent", fmt.Sprintf("ollama/%s (%s %s) Go/%s", version.Version, runtime.GOARCH, runtime.GOOS, runtime.Version()))
 
 	response, err := c.http.Do(request)
@@ -222,6 +240,23 @@ type ChatResponseFunc func(ChatResponse) error
 // streaming is enabled).
 func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn ChatResponseFunc) error {
 	return c.stream(ctx, http.MethodPost, "/api/chat", req, func(bts []byte) error {
+		var resp ChatResponse
+		if err := json.Unmarshal(bts, &resp); err != nil {
+			return err
+		}
+
+		return fn(resp)
+	})
+}
+
+type ChatOpt struct {
+	Token string
+	HOST  string
+}
+
+// ChatWithOption
+func (c *Client) ChatWithOption(ctx context.Context, req *ChatRequest, opt *ChatOpt, fn ChatResponseFunc) error {
+	return c.streamWithOption(ctx, http.MethodPost, "/api/chat", req, opt, func(bts []byte) error {
 		var resp ChatResponse
 		if err := json.Unmarshal(bts, &resp); err != nil {
 			return err
